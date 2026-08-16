@@ -1,0 +1,27 @@
+# Render blueprint for the public HTTP MCP server (Part 2.3).
+#
+# Deploy:
+#   1. Push this repository to GitHub.
+#   2. Render dashboard -> New -> Blueprint -> pick the repo.
+#   3. Render prompts for MCP_API_KEY (marked sync:false below). Paste a value
+#      generated with:
+#        node -e "console.log(require('crypto').randomBytes(24).toString('hex'))"
+#   4. The public MCP endpoint is https://<service>.onrender.com/mcp
+#
+# Note: the free tier spins the container down when idle and gives it an
+# ephemeral disk. Hit /health once before a demo so the first MCP request isn't
+# waiting on a cold start.
+
+services:
+  - type: web
+    name: team-log-mcp
+    runtime: docker
+    plan: free
+    dockerfilePath: ./packages/server-public-http/Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    envVars:
+      - key: MCP_API_KEY
+        sync: false
+      - key: DATA_DIR
+        value: /app/data

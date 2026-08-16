@@ -1,0 +1,30 @@
+{
+  "_comment": [
+    "Part 4 — the same three servers registered for Claude Code / Claude Desktop.",
+    "Claude Desktop does not expand ${VAR}, so absolute paths and the literal API",
+    "key are required here. Replace <ABSOLUTE_REPO_PATH>, <YOUR_API_KEY> and the",
+    "public URL before copying this into:",
+    "  macOS   ~/Library/Application Support/Claude/claude_desktop_config.json",
+    "  Claude Code  ~/.claude.json  (or use the `claude mcp add` commands in the README)"
+  ],
+  "mcpServers": {
+    "git-inspector": {
+      "command": "node",
+      "args": ["<ABSOLUTE_REPO_PATH>/packages/server-stdio/dist/index.js"],
+      "env": {
+        "DEFAULT_REPO_PATH": "<ABSOLUTE_REPO_PATH>"
+      }
+    },
+    "code-analyzer": {
+      "type": "http",
+      "url": "http://localhost:3001/mcp"
+    },
+    "team-log": {
+      "type": "http",
+      "url": "https://<YOUR-DEPLOYMENT>.onrender.com/mcp",
+      "headers": {
+        "Authorization": "Bearer <YOUR_API_KEY>"
+      }
+    }
+  }
+}

@@ -1,0 +1,14 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.env
+data/
+.DS_Store
+
+# Máy-cụ-thể: quyền của Claude Code trên máy này, không liên quan tới bài nộp.
+.claude/settings.local.json
+
+# Dự án dùng npm workspaces (package-lock.json). Một lockfile thứ hai sẽ khiến
+# người chấm cài ra cây phụ thuộc khác với cái đã được kiểm thử.
+pnpm-lock.yaml
+yarn.lock

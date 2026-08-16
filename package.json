@@ -1,0 +1,28 @@
+{
+  "name": "mcp-homework-22127086",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "MCP-enabled agent host, three MCP servers, and an agent skill system.",
+  "workspaces": [
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc --build packages/shared packages/server-stdio packages/server-local-http packages/server-public-http packages/agent-host",
+    "clean": "tsc --build --clean packages/shared packages/server-stdio packages/server-local-http packages/server-public-http packages/agent-host",
+    "host": "node --env-file-if-exists=.env packages/agent-host/dist/index.js",
+    "start:stdio": "node --env-file-if-exists=.env packages/server-stdio/dist/index.js",
+    "start:local-http": "node --env-file-if-exists=.env packages/server-local-http/dist/index.js",
+    "start:public-http": "node --env-file-if-exists=.env packages/server-public-http/dist/index.js",
+    "inspect:stdio": "npx @modelcontextprotocol/inspector node packages/server-stdio/dist/index.js",
+    "inspect": "npx @modelcontextprotocol/inspector"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.2"
+  }
+}

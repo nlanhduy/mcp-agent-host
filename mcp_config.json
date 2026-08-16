@@ -1,0 +1,32 @@
+{
+  "llm": {
+    "baseUrl": "http://localhost:11434/v1",
+    "model": "qwen3:4b",
+    "apiKey": "ollama",
+    "temperature": 0.3,
+    "maxIterations": 10,
+    "extraBody": {
+      "reasoning_effort": "none"
+    }
+  },
+  "skillsPath": "./skills",
+  "mcpServers": {
+    "git-inspector": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["./packages/server-stdio/dist/index.js"],
+      "cwd": "."
+    },
+    "code-analyzer": {
+      "type": "http",
+      "url": "http://localhost:3001/mcp"
+    },
+    "team-log": {
+      "type": "http",
+      "url": "http://localhost:3002/mcp",
+      "headers": {
+        "Authorization": "Bearer ${MCP_API_KEY}"
+      }
+    }
+  }
+}
