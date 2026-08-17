@@ -258,16 +258,18 @@ export class Agent {
   /**
    * Reads tool calls from the model's reply.
    *
-   * Small models emit tool calls three different ways, and qwen3:4b uses all
-   * three from one session to the next:
+   * Small models emit tool calls four different ways, and qwen3:4b has used all
+   * four across sessions with an unchanged prompt:
    *
    *   1. the structured `tool_calls` field — the OpenAI contract;
    *   2. text wrapped in `<tool_call>{...}</tool_call>` — Qwen's native format
    *      leaking through Ollama's compatibility layer;
-   *   3. a bare JSON object in `content`, with no wrapper at all.
+   *   3. a bare JSON object in `content`, with no wrapper at all;
+   *   4. prose of the form `tool_name: arg="value", other=10`.
    *
-   * Only (1) is handled by the SDK. Recovering (2) and (3) is what keeps the
-   * agent usable on a 4B model.
+   * Only (1) is handled by the SDK. Recovering the rest is what keeps the agent
+   * usable on a 4B model. Every recovery path is gated on the name matching a
+   * tool that actually exists, so ordinary prose is never mistaken for a call.
    */
   private extractToolCalls(reply: {
     content?: string | null;
@@ -277,24 +279,21 @@ export class Agent {
 
     const content = stripThinking(reply.content ?? "");
     const tagged =[...content.matchAll(/<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/g)].map((m) => m[1]);
-    const candidates = tagged.length > 0 ? tagged : this.bareJsonCandidates(content);
+    const candidates =
+      tagged.length > 0
+        ? tagged
+        : [...this.bareJsonCandidates(content), ...this.prosaicCallCandidates(content)];
 
     const recovered: ChatCompletionMessageToolCall[] = [];
     candidates.forEach((candidate, index) => {
       try {
-        const parsed = JSON.parse(candidate) as {
-          name?: string;
-          arguments?: unknown;
-          parameters?: unknown;
-        };
-        if (!parsed.name) return;
+        const parsed: unknown = JSON.parse(candidate);
+        const name = callNameOf(parsed);
+        if (!name) return;
         recovered.push({
-          id: `recovered_${index}_${parsed.name}`,
+          id: `recovered_${index}_${name}`,
           type: "function",
-          function: {
-            name: parsed.name,
-            arguments: JSON.stringify(parsed.arguments ?? parsed.parameters ?? {}),
-          },
+          function: { name, arguments: JSON.stringify(callArgsOf(parsed)) },
         });
       } catch {
         // Not parseable — treat it as prose and let the model try again.
@@ -305,8 +304,49 @@ export class Agent {
   }
 
   /**
+   * Recovers a call the model wrote as prose rather than as data:
+   *
+   *   git-inspector__git_recent_commits: repo_path="D:\\repo", since="7 days ago"
+   *   find_todos(directory="./src", max_results=10)
+   *
+   * The tool name must lead the reply and must exist, which is what keeps this
+   * from firing on a sentence that merely mentions a tool.
+   */
+  private prosaicCallCandidates(content: string): string[] {
+    const match = content.trim().match(/^([A-Za-z0-9_-]+)\s*[:(]([\s\S]*?)\)?\s*$/);
+    if (!match) return [];
+
+    const [, name, argText] = match;
+    if (!this.tools.some((tool) => tool.function.name === name)) return [];
+
+    const args: Record<string, unknown> = {};
+    const pair = /([A-Za-z_][A-Za-z0-9_]*)\s*[=:]\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^,\n]+)/g;
+
+    for (const [, key, raw] of argText.matchAll(pair)) {
+      const value = raw.trim();
+
+      if (value.startsWith('"') || value.startsWith("'")) {
+        const asJson = value.startsWith("'") ? `"${value.slice(1, -1)}"` : value;
+        try {
+          args[key] = JSON.parse(asJson);
+        } catch {
+          args[key] = value.slice(1, -1);
+        }
+      } else if (value === "true" || value === "false") {
+        args[key] = value === "true";
+      } else if (value !== "" && !Number.isNaN(Number(value))) {
+        args[key] = Number(value);
+      } else {
+        args[key] = value;
+      }
+    }
+
+    return [JSON.stringify({ name, arguments: args })];
+  }
+
+  /**
    * Treats a reply that is *nothing but* a JSON object as an unwrapped tool
-   * call — but only when its `name` matches a tool that actually exists.
+   * call — but only when every object names a tool that actually exists.
    *
    * That guard matters: without it, a legitimate answer that happens to be JSON
    * would be dispatched as a tool call instead of shown to the user.
@@ -328,13 +368,13 @@ export class Agent {
     }
 
     const objects = Array.isArray(parsed) ? parsed : [parsed];
-    const known = new Set(this.tools.map((t) => t.function.name));
+    const known = new Set(this.tools.map((tool) => tool.function.name));
+    const namesAllKnown = objects.every((object) => {
+      const name = callNameOf(object);
+      return name !== undefined && known.has(name);
+    });
 
-    return objects.every(
-      (o) => typeof (o as { name?: unknown })?.name === "string" && known.has((o as { name: string }).name),
-    )
-      ? objects.map((o) => JSON.stringify(o))
-      : [];
+    return namesAllKnown ? objects.map((object) => JSON.stringify(object)) : [];
   }
 }
 
@@ -348,6 +388,45 @@ export class Agent {
  * splitting reasoning into its own field. In that second case everything before
  * the tag is reasoning, so the answer is what follows it.
  */
+/**
+ * Reads the tool name out of a recovered JSON object.
+ *
+ * There is no single spelling to rely on: `{"name":...}` matches the OpenAI
+ * shape, but qwen3:4b also emits `{"tool":...}` and `{"function":{"name":...}}`
+ * for the same call. Every caller still checks the result against the real tool
+ * catalogue, so being liberal here cannot invent a call out of ordinary JSON.
+ */
+function callNameOf(value: unknown): string | undefined {
+  if (!value || typeof value !== "object") return undefined;
+
+  const object = value as Record<string, unknown>;
+  const fn = object.function;
+  const nested = fn && typeof fn === "object" ? (fn as Record<string, unknown>).name : fn;
+
+  return [object.name, object.tool, object.tool_name, nested].find(
+    (candidate): candidate is string => typeof candidate === "string",
+  );
+}
+
+/** The matching argument bag, under whichever key the model chose. */
+function callArgsOf(value: unknown): unknown {
+  const object = (value ?? {}) as Record<string, unknown>;
+  const fn = object.function;
+  const nested = fn && typeof fn === "object" ? (fn as Record<string, unknown>).arguments : undefined;
+
+  const args = object.arguments ?? object.parameters ?? object.args ?? object.input ?? nested ?? {};
+
+  // Some replies double-encode the bag as a JSON string.
+  if (typeof args === "string") {
+    try {
+      return JSON.parse(args);
+    } catch {
+      return {};
+    }
+  }
+  return args;
+}
+
 function stripReasoning(content: string): string {
   return stripThinking(content).replace(/<tool_call>[\s\S]*?<\/tool_call>/g, "").trim();
 }
