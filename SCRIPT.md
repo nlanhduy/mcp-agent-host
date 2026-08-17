@@ -37,8 +37,8 @@ ghi rõ *vì sao cần* và *cách kiểm chứng đã đúng*.
 | Git | ✅ Bắt buộc | Server stdio gọi `git` thật; và cần repo để nộp | Có (2.50.1) |
 | MCP Inspector | ✅ Bắt buộc | Đề yêu cầu chứng minh qua Inspector | Chạy qua `npx`, không cần cài |
 | File `.env` | ✅ Bắt buộc | Chứa API key cho server public | Đã có |
-| Nơi deploy public | ✅ Bắt buộc | Part 2.3 — 15% điểm | **Chưa làm** |
-| Tài khoản GitHub | ✅ Bắt buộc | Nộp source code + để Render build | **Chưa làm** |
+| Nơi deploy public | ✅ Bắt buộc | Part 2.3 — 15% điểm | **Đã deploy lên Render** |
+| Tài khoản GitHub | ✅ Bắt buộc | Nộp source code + để Render build | **Đã dùng để triển khai** |
 | Docker | ⬜ Tuỳ chọn | Chỉ để test image dưới máy trước khi deploy | Có |
 | Host MCP thứ hai | ⬜ Tuỳ chọn | Part 4 — nếu bỏ thì mất một phần của 25% | Đang dùng |
 
@@ -240,157 +240,52 @@ trị thật lúc đọc config (hàm `expandEnv` trong [config.ts](packages/age
 
 ---
 
-## Bước 0.5 — Deploy server public
+## Bước 0.5 — Public HTTP server đã deploy trên Render
 
-> **Đây là bước duy nhất còn thiếu, và nó chiếm 15% điểm.**
+> **Phần này không còn là hướng dẫn deploy nữa.** Server public của em đã được triển khai lên
+> Render, nên ở đây chỉ cần giải thích vai trò của Render và những gì người chấm sẽ thấy.
 
 ### Đề bài yêu cầu gì
 
 > **Part 2.3 — Public HTTP MCP Server**
 > - Transport: Deployed remote HTTP endpoint
-> - Authentication: Secured with API Key Protection
-> - **Must be accessible on the public internet**
+> - Authentication: Secured with API Key Protection (`Authorization: Bearer <token>`)
+> - Must be accessible on the public internet
 > - Must pass validation using the MCP Inspector
 
-Và phần nộp bài:
-> *Public Deployment Credentials: Public HTTP Server URL. Valid API Key for grading assessment.*
+### Render đang làm gì trong bài này
 
-Câu **"Valid API Key for grading assessment"** rất quan trọng: nghĩa là **thầy sẽ tự gọi vào
-server của anh để chấm**. Nên server phải sống ở thời điểm chấm, không chỉ lúc quay video.
+Render chỉ đóng vai trò **nơi host server public**. Nó không thay đổi logic MCP bên trong, mà
+chỉ cung cấp ba thứ:
 
-### Có bắt buộc dùng Render không?
+1. **URL công khai** để người chấm có thể gọi từ bên ngoài.
+2. **HTTPS tự động** để endpoint an toàn và hợp lệ trên internet.
+3. **Môi trường chạy ổn định** với biến `PORT` và `MCP_API_KEY` được inject lúc khởi động.
 
-**Không.** Đề chỉ yêu cầu *"accessible on the public internet"*. Render chỉ là lựa chọn em thấy
-tiện nhất. Bốn phương án:
+### Ý nghĩa của Render với server này
 
-| Phương án | Chi phí | Ưu | Nhược | Khuyến nghị |
-|---|---|---|---|---|
-| **Render** | Miễn phí | Có sẵn [render.yaml](render.yaml), deploy bằng vài cú click, HTTPS tự động | Ngủ khi rảnh → cold start ~30–50s | ✅ **Nên chọn** |
-| **Railway** | ~$5 credit | Không ngủ, nhanh hơn | Hết credit là dừng | Tốt |
-| **Fly.io** | Miễn phí có hạn | Không ngủ, có volume thật | Cấu hình phức tạp hơn | Tốt nếu quen |
-| **ngrok / Cloudflare Tunnel** | Miễn phí | Nhanh nhất, 2 phút xong | **URL chết khi máy anh tắt/ngủ** | ❌ **Rủi ro cao** |
+- `/health` vẫn mở không cần key để Render kiểm tra service còn sống.
+- `/mcp` mới là endpoint MCP thật, và nó bắt buộc có `Authorization: Bearer <token>`.
+- Dữ liệu standup được ghi vào file JSON trên container, nên nếu Render redeploy thì dữ liệu có
+  thể mất nếu không gắn volume.
 
-**Vì sao em khuyên tránh ngrok/tunnel:** nó chỉ đưa `localhost` của anh ra internet. Khi thầy
-chấm bài — có thể vài ngày sau — máy anh đã tắt, URL chết, và anh **mất trắng 15%**. Đề nói
-*"reliable uptime"* trong rubric, tunnel không đáp ứng được.
+### Hai hạn chế cần nhớ khi quay demo
 
-**Vì sao Render là lựa chọn tốt nhất ở đây:** miễn phí thật, HTTPS tự động, và repo đã có sẵn
-[render.yaml](render.yaml) + [Dockerfile](packages/server-public-http/Dockerfile) nên chỉ cần
-click.
+**Container ngủ khi rảnh.** Sau một thời gian không có request, Render có thể cold start lại.
+→ Trước khi quay, nên gọi `/health` một lần để đánh thức container.
 
-### Điều kiện tiên quyết: đẩy code lên GitHub
+**Ổ đĩa ephemeral.** Nếu redeploy, dữ liệu trên disk container có thể không còn.
+→ Đây là hành vi đã giải thích trong README và resource `teamlog://config/settings`.
 
-Render build từ GitHub, nên phải push trước. Hiện repo **chưa có remote nào**.
+### Kiểm chứng trên Render
 
-```bash
-cd /Users/maplelabs/22127086
-git remote -v          # hiện tại trống
-```
+Khi cần kiểm tra, chỉ cần dùng ba điều sau:
 
-Các bước:
-```bash
-# 1. Tạo repo trên github.com (để trống, không thêm README)
-# 2. Nối và đẩy lên
-git remote add origin https://github.com/<username>/mcp-homework-22127086.git
-git branch -M main
-git push -u origin main
-```
+1. `PUBLIC_URL` trỏ tới URL Render.
+2. `MCP_API_KEY` trùng với key local trong `.env`.
+3. Gọi `/health` trước, rồi mới gọi `/mcp` với bearer token.
 
-> ⚠️ Trước khi push, kiểm tra `.env` **không** bị đẩy lên:
-> ```bash
-> git ls-files | grep -c '^\.env$'    # phải ra 0
-> ```
-
-### Deploy lên Render
-
-1. Vào [render.com](https://render.com), đăng nhập bằng GitHub.
-2. **New → Blueprint** → chọn repo vừa push.
-3. Render đọc [render.yaml](render.yaml) và tự nhận ra cấu hình:
-   ```yaml
-   services:
-     - type: web
-       name: team-log-mcp
-       runtime: docker
-       plan: free
-       dockerfilePath: ./packages/server-public-http/Dockerfile
-       dockerContext: .
-       healthCheckPath: /health
-       envVars:
-         - key: MCP_API_KEY
-           sync: false          # ← Render sẽ hỏi anh nhập
-         - key: DATA_DIR
-           value: /app/data
-   ```
-4. Render hỏi `MCP_API_KEY` (vì `sync: false` nghĩa là "không lấy từ repo, hỏi người dùng").
-   **Dán đúng key trong `.env`** để cùng một key dùng được cả local lẫn public.
-5. Chờ build xong (~3–5 phút lần đầu).
-6. URL sẽ là `https://team-log-mcp-xxxx.onrender.com`, endpoint MCP là `<URL>/mcp`.
-
-### Hai chi tiết kỹ thuật của Dockerfile
-
-Mở [packages/server-public-http/Dockerfile](packages/server-public-http/Dockerfile):
-
-**Một — build context là thư mục gốc, không phải thư mục con:**
-```dockerfile
-# docker build -f packages/server-public-http/Dockerfile -t team-log .
-```
-Vì server này import từ workspace `@hw/shared`. Nếu context là thư mục con thì không copy được
-package đó vào image. Đó là lý do `render.yaml` có `dockerContext: .`.
-
-**Hai — port đọc từ biến môi trường:**
-```dockerfile
-ENV PORT=3002
-```
-```ts
-const PORT = Number(process.env.PORT ?? 3002);
-```
-Render, Railway, Fly, Cloud Run đều inject `PORT` — nên **cùng một image chạy được ở mọi nền
-tảng** không cần sửa code.
-
-### Kiểm chứng deploy
-
-```bash
-export PUBLIC_URL=https://<service-cua-anh>.onrender.com
-export MCP_API_KEY=$(grep '^MCP_API_KEY=' .env | cut -d= -f2-)
-
-# 1. Server sống, health không cần key
-curl -s $PUBLIC_URL/health
-# {"status":"ok","server":"team-log","sessions":0}
-
-# 2. Không key → bị chặn
-curl -s -o /dev/null -w 'HTTP %{http_code}\n' -X POST $PUBLIC_URL/mcp \
-  -H 'content-type: application/json' -d '{}'
-# HTTP 401
-
-# 3. Có key → tạo được session
-curl -s -i -X POST $PUBLIC_URL/mcp \
-  -H "Authorization: Bearer $MCP_API_KEY" \
-  -H 'content-type: application/json' \
-  -H 'accept: application/json, text/event-stream' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"curl","version":"1"}}}' | grep -i 'mcp-session-id'
-```
-
-Đủ ba dòng trên là deploy đã đúng.
-
-### Hai hạn chế của free tier — biết trước để không bị bất ngờ
-
-**Container ngủ khi rảnh.** Sau ~15 phút không có request, Render tắt container. Request tiếp
-theo phải chờ **cold start 30–50 giây**.
-→ *Cách xử lý:* gọi `curl $PUBLIC_URL/health` một lần **ngay trước khi quay** để đánh thức.
-
-**Ổ đĩa ephemeral.** Dữ liệu standup lưu trong file JSON trên đĩa container, **mất khi redeploy**.
-→ Điều này đã ghi rõ trong README và trong resource `teamlog://config/settings` của server, không
-giấu. Nếu muốn bền thì mount volume vào `DATA_DIR`.
-
-### Nếu muốn test Docker dưới máy trước
-
-```bash
-docker build -f packages/server-public-http/Dockerfile -t team-log .
-docker run -p 3002:3002 -e MCP_API_KEY=$(grep '^MCP_API_KEY=' .env | cut -d= -f2-) team-log
-curl -s localhost:3002/health
-```
-Bước này **không bắt buộc**, nhưng nếu build lỗi ở máy thì cũng lỗi trên Render — phát hiện sớm
-đỡ mất thời gian chờ.
+> Nếu các bước này đúng, nghĩa là phần deploy Render đã hoàn tất và không cần quay lại phần setup.
 
 ---
 
@@ -505,7 +400,7 @@ demo mất ý nghĩa. Nếu commit cũ, khi demo hãy nói *"in the last 7 days"
 - [ ] `npm install && npm run build` → đủ 5 file `dist/index.js`
 - [ ] `.env` có `MCP_API_KEY` dài >16 ký tự, và `git check-ignore .env` xác nhận bị bỏ qua
 - [ ] Code đã push lên GitHub, `.env` **không** có trong `git ls-files`
-- [ ] Render deploy xong, cả 3 lệnh `curl` kiểm chứng đều đúng
+- [x] Render deploy xong, server public đã có URL và API key hoạt động
 - [ ] Host MCP thứ hai thấy đủ 3 server
 - [ ] Chạy thử 3 terminal → **4 dấu ✓ và 10 tools**
 - [ ] Đã làm nóng model
@@ -519,7 +414,7 @@ Nếu làm từ đầu, theo thứ tự này để không phải chờ:
 
 1. **Bước 0.1–0.4** (Node, Ollama, build, `.env`) — ~15 phút
 2. **Bước 0.7** chạy thử dưới máy — xác nhận code chạy được trước khi lo deploy
-3. **Push GitHub + Render** (Bước 0.5) — chờ build ~5 phút, trong lúc đó đọc kịch bản
+3. **Render đã deploy sẵn** — chỉ kiểm tra URL và API key trước khi quay
 4. **Host MCP thứ hai** (Bước 0.6) — nhanh
 5. **Chạy thử lần cuối + làm nóng model** — ngay trước khi bấm ghi
 
@@ -620,6 +515,74 @@ Trình duyệt mở MCP Inspector → bấm **Connect**.
 > vòng đời server gắn với vòng đời client, client tắt là server tắt theo, không có tiến trình
 > mồ côi."
 
+### Bốn khái niệm cần giải thích rõ ở đây
+
+Nếu người chấm hỏi sâu, hoặc nếu muốn nói kỹ hơn, đây là bốn thứ cần nắm chắc.
+
+**a) Vì sao đưa câu lệnh chứ không đưa URL**
+
+MCP có nhiều transport. Đưa URL **chỉ có nghĩa khi server đã tự chạy sẵn và đang lắng nghe một
+cổng mạng**. Server stdio thì không lắng nghe cổng nào cả — nó chỉ đọc/ghi stdin/stdout, nên
+không tồn tại URL nào để đưa. Thứ duy nhất mô tả được nó là **cách để sinh ra nó**.
+
+| | stdio | HTTP/SSE |
+|---|---|---|
+| Server chạy ở đâu | Máy cục bộ, do client tự khởi động | Máy chủ riêng, đã chạy sẵn |
+| Client cần biết gì | **Câu lệnh để chạy server** | **URL** (`https://...`) |
+| Kênh truyền | stdin/stdout của tiến trình con | Cổng mạng TCP |
+| Vòng đời | Gắn với client | Độc lập |
+
+> "Nói ngắn gọn: với HTTP thì client *tìm đến* server; với stdio thì client *tạo ra* server."
+
+**b) Inspector là gì**
+
+`@modelcontextprotocol/inspector` — công cụ debug chính thức của MCP. Nó đóng vai **một MCP
+client giả lập có giao diện web**, để xem server khai báo những tool/resource/prompt gì và gọi
+thử chúng mà không cần viết host riêng. Trong lúc phát triển, nó thay thế vai trò của Claude
+Desktop hoặc Agent Host ở Cảnh 4.
+
+**c) Spawn tiến trình con là gì**
+
+"Spawn" là việc một tiến trình (Inspector) yêu cầu hệ điều hành tạo ra một tiến trình mới
+(server), giữ quan hệ **cha – con**. Điểm mấu chốt: khi tạo tiến trình con, tiến trình cha
+**giữ được ba đường ống (pipe)** nối vào con:
+
+| fd | Tên | Hướng |
+|---|---|---|
+| 0 | `stdin` | cha **ghi** vào → con **đọc** |
+| 1 | `stdout` | con **ghi** vào → cha **đọc** |
+| 2 | `stderr` | con ghi log/lỗi → cha đọc |
+
+Bình thường khi gõ `node index.js` ở terminal, ba đường ống này nối vào bàn phím và màn hình.
+Khi Inspector spawn server, chúng nối vào chính Inspector. Đây là "kênh truyền" — hoàn toàn nằm
+trong bộ nhớ của hệ điều hành, **không đi qua card mạng**.
+
+Vì là quan hệ cha–con nên Inspector tắt thì pipe đóng, server đọc được EOF trên stdin và tự
+thoát → không có tiến trình mồ côi.
+
+**d) JSON-RPC là gì**
+
+Một quy ước định dạng cho việc "gọi hàm từ xa", mã hoá bằng JSON. MCP dùng **JSON-RPC 2.0** làm
+ngôn ngữ chung cho cả ba transport.
+
+```jsonc
+// Request  — client → server
+{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}
+
+// Response — server → client
+{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"git_recent_commits"}]}}
+```
+
+- `method` — tên thao tác (`initialize`, `tools/list`, `tools/call`, `resources/read`…)
+- `id` — để ghép request với response, vì có thể gửi nhiều request cùng lúc và response về
+  không theo thứ tự
+- message **không có `id`** là *notification* — gửi một chiều, không cần trả lời
+
+**"Đọc response từ stdout" nghĩa là gì:** với stdio, mỗi message JSON là **một dòng kết thúc
+bằng `\n`** (newline-delimited JSON). Server ghi `process.stdout.write(JSON.stringify(res) + "\n")`;
+Inspector lắng nghe sự kiện `data` trên stdout của tiến trình con, gom byte lại, cắt theo `\n`,
+parse JSON, khớp `id` với request đã gửi và resolve Promise tương ứng.
+
 **Hệ quả kỹ thuật rất quan trọng cần nói:**
 
 Mở [packages/server-stdio/src/index.ts:1](packages/server-stdio/src/index.ts#L1), chỉ vào comment đầu file:
@@ -675,6 +638,10 @@ server.registerTool(
   safeTool("git_recent_commits", async ({ repo_path, since, author, limit }) => { ... }),
 );
 ```
+
+> "Đoạn này em sẽ chỉ vào ba thứ: `inputSchema` là phần khai báo dữ liệu đầu vào, `safeTool`
+> là lớp bọc xử lý lỗi an toàn, và phần callback phía dưới là logic thật của tool. Khi demo,
+> chỉ cần nói rằng MCP SDK tự biến schema này thành JSON Schema để Inspector và LLM cùng dùng."
 
 **Giải thích cơ chế — nói theo trình tự này:**
 
@@ -742,6 +709,33 @@ export async function git(repoPath: string, args: string[]): Promise<string> {
 >
 > Đây là điểm quan trọng vì tham số của tool đến từ LLM — mà LLM thì có thể bị prompt injection
 > điều khiển."
+
+**`execFile` chính xác là gì — phần dự phòng nếu bị hỏi:**
+
+`execFile(file, args[], options, callback)` thuộc module `child_process` của Node. Nó chạy
+**một file thực thi cụ thể** với danh sách tham số **đã tách sẵn**. So sánh với `exec`:
+
+```js
+// exec — chuỗi được đưa cho SHELL diễn giải
+exec(`git log --author=${author}`)
+// author = "x; rm -rf /"  →  shell thấy dấu ; và chạy luôn lệnh rm. Command injection.
+
+// execFile — KHÔNG có shell, mỗi phần tử mảng là 1 tham số nguyên vẹn
+execFile("git", ["log", `--author=${author}`])
+// author = "x; rm -rf /"  →  git nhận đúng 1 chuỗi "--author=x; rm -rf /",
+//                            coi là dữ liệu, không tìm thấy gì. An toàn.
+```
+
+| | `exec` | `execFile` |
+|---|---|---|
+| Có shell trung gian | Có (`/bin/sh -c`) | **Không** |
+| Tham số truyền vào | Một chuỗi | Mảng argv |
+| `;` `|` `&&` `$(...)` `>` | Có ý nghĩa đặc biệt | Chỉ là ký tự thường |
+| Glob `*`, biến `$HOME` | Shell tự expand | Phải tự làm trong code |
+
+> "Vì không qua shell nên mọi ký tự đặc biệt mất ý nghĩa — chúng chỉ còn là ký tự trong chuỗi.
+> Đổi lại em cũng mất tiện ích của shell như glob hay pipe, nhưng ở đây em không cần đến chúng.
+> Với input đến từ LLM thì đây là đánh đổi hoàn toàn xứng đáng."
 
 ### Cơ chế 2: parse `git log` an toàn
 
@@ -829,6 +823,10 @@ server.registerResource(
 );
 ```
 
+> "Resource này em dùng để minh hoạ rằng server không chỉ có tool. Nó trả về dữ liệu đọc-only
+> theo URI, nên khi nói với người chấm em có thể nhấn mạnh: tool là để làm việc, resource là để
+> đọc cấu hình hoặc trạng thái."
+
 > "URI scheme `gitinspector://` là do em tự đặt. MCP **không bắt buộc** dùng `http://` hay
 > `file://` — URI chỉ cần định danh duy nhất trong phạm vi server đó. Cách đặt tên theo scheme
 > riêng giúp client biết ngay resource này thuộc server nào.
@@ -886,6 +884,10 @@ server.registerPrompt(
     }],
   }),
 );
+
+  > "Em sẽ giải thích đây là prompt template có sẵn từ server: client chỉ cần nhập `repo_path`,
+  > còn nội dung hướng dẫn đã được server dựng sẵn thành từng bước. Điểm hay là prompt này có thể
+  > tái dùng cho mọi client hiểu MCP, không phụ thuộc vào UI cụ thể."
 ```
 
 > "Điểm cần nhấn: template này **tự chèn tham số vào lời hướng dẫn**. Anh chị thấy nó không nói
@@ -966,6 +968,10 @@ export function safeTool<Args>(
   };
 }
 ```
+
+> "Đây là lớp bảo vệ chung cho toàn bộ tool. Khi em giải thích, em có thể nói: thay vì để
+> từng tool tự nhớ format lỗi, em bọc nó bằng `safeTool` để mọi lỗi đều trả về đúng kiểu MCP,
+> có `isError: true` và thông điệp dễ đọc cho model."
 
 [packages/shared/src/result.ts:42](packages/shared/src/result.ts#L42):
 
@@ -1500,6 +1506,10 @@ function expandEnv(value: unknown): unknown {
 }
 ```
 
+> "Đoạn này xử lý bí mật theo kiểu placeholder. Khi demo, em chỉ cần chỉ vào chuỗi
+> `${MCP_API_KEY}` trong config và nói rằng host sẽ tự thay bằng giá trị thật từ môi trường,
+> nên key không bao giờ nằm cứng trong file commit."
+
 > "Chỉ vào dòng `"Authorization": "Bearer ${MCP_API_KEY}"` trong config.
 >
 > File config **commit lên git** chỉ chứa placeholder `${MCP_API_KEY}`. Key thật nằm trong
@@ -1566,6 +1576,10 @@ private async indexTools(connection: Connection): Promise<void> {
   }
 }
 ```
+
+> "Ở đoạn này em sẽ giải thích vì sao phải namespace tool. Nếu không thêm tiền tố server,
+> model sẽ thấy một danh sách tool phẳng và rất dễ gọi nhầm. Namespace vừa tránh đụng tên,
+> vừa cho Host biết phải định tuyến request về client nào."
 
 > "`catalog` vừa là danh sách tool để đưa cho model, vừa là bảng dispatch. Mỗi entry nhớ hai
 > thứ: **server nào sở hữu** và **tên thật của tool** ở server đó.
@@ -1669,11 +1683,61 @@ private async connect(name: string, server: ServerConfig): Promise<Connection> {
 
 **Thao tác:** Gõ `/resources`, rồi `/prompts`.
 
+### Output sẽ thấy
+
+```
+you › /resources
+  codeanalyzer://config/settings   [code-analyzer]  settings
+  gitinspector://config/settings   [git-inspector]  settings
+  teamlog://config/settings        [team-log]       settings
+Read one with: /resources <uri>
+
+you › /prompts
+  standup_report  [git-inspector]  Prompt template that turns a repository's
+                                   recent commits into a daily standup update.
+```
+
+### Đọc output này như thế nào
+
+**Ba dòng `/resources`** — mỗi dòng là một resource, ba cột: **URI định danh**, **server nào
+cung cấp**, **tên hiển thị**. Có đúng ba dòng vì cả ba server đều khai báo resource cấu hình
+của mình.
+
+> "Điểm cần nhấn ở đây là **scheme của URI do server tự đặt** — `gitinspector://`,
+> `codeanalyzer://`, `teamlog://` không phải scheme chuẩn của internet, chúng chỉ có ý nghĩa
+> trong phạm vi server đó. Và vì Host của em gộp resource từ cả ba server vào một danh sách,
+> nên em phải giữ lại thông tin **resource này thuộc server nào** — đó là cột trong ngoặc vuông.
+> Không có nó thì lúc `readResource(uri)` Host không biết định tuyến về đâu.
+>
+> Khác biệt bản chất so với tool: **resource là đọc dữ liệu, không có tác dụng phụ, do người
+> dùng chủ động chọn; tool là hành động, có thể gây tác dụng phụ, do model chủ động gọi.**"
+
+**Một dòng `/prompts`** — chỉ `git-inspector` khai báo prompt template.
+
+> "Prompt template là hội thoại viết sẵn do server cung cấp, người dùng chủ động kích hoạt — ở
+> Claude Desktop nó hiện ra thành slash command. Nó **không phải tool**: server không thực thi
+> gì cả, chỉ trả về danh sách message đã dựng sẵn để nhét vào context.
+>
+> Đây là cách server đóng gói know-how: người viết server hiểu dữ liệu của mình nhất, nên họ
+> cũng biết cách hỏi model hiệu quả nhất."
+
+### Vì sao phải bắt lỗi
+
 > "Đề bài yêu cầu server có resource và prompt. Em không dừng ở chỗ Inspector đọc được — **Host
 > của em cũng gọi `listResources()` và `listPrompts()` trên tất cả server và gộp lại**.
 >
 > Ở đây có một chi tiết: server nào không khai báo capability resource sẽ throw khi gọi
 > `listResources`. Em bắt lỗi đó và bỏ qua, vì không có resource **không phải là lỗi**."
+
+Cụ thể: trong handshake `initialize`, server tự khai báo mình hỗ trợ những gì —
+
+```json
+{"capabilities": {"tools": {}, "resources": {}, "prompts": {}}}
+```
+
+Server nào **không** khai `resources` mà client vẫn gọi `listResources()` thì SDK trả lỗi
+JSON-RPC **`-32601 Method not found`**. Vì Host gọi mù trên tất cả server nên phải bọc
+`try/catch` từng server một:
 
 [packages/agent-host/src/mcp-manager.ts:189](packages/agent-host/src/mcp-manager.ts#L189):
 
@@ -1689,6 +1753,14 @@ for (const connection of this.connections.values()) {
   }
 }
 ```
+
+**Câu nên nói thêm để ăn điểm — nếu bị hỏi "sao không kiểm tra trước?":**
+
+> "Bắt lỗi là phương án **phòng thủ**. Phương án đúng giao thức hơn là đọc `capabilities` mà
+> server trả về lúc `initialize`, rồi **chỉ gọi khi server có khai báo** — vừa tránh một vòng
+> request thừa, vừa phân biệt được 'server không hỗ trợ' với 'server hỗ trợ nhưng lỗi thật'.
+> Em chọn `try/catch` vì nó chịu được cả trường hợp server khai capability nhưng cài thiếu, còn
+> kiểm tra capability trước thì không."
 
 ---
 ---
@@ -1746,6 +1818,10 @@ export function renderSkillIndex(skills: Skill[]): string {
   ].join("\n");
 }
 ```
+
+> "Đây là phần em sẽ nói khi giải thích skill: host không nạp toàn bộ nội dung skill ngay từ
+> đầu, mà chỉ chèn một danh sách ngắn vào system prompt để model biết skill nào đang tồn tại.
+> Khi có khớp ngữ nghĩa thì mới gọi `use_skill`."
 
 > "Bốn dòng hướng dẫn cuối mới là phần **làm việc thật**, không phải danh sách skill.
 >
@@ -1946,6 +2022,10 @@ async send(userMessage: string): Promise<string> {
 }
 ```
 
+> "Đoạn này là vòng lặp điều phối trung tâm. Khi trình bày, em có thể nói ngắn gọn: model
+> trả về tool call thì Host chạy tool, đẩy kết quả ngược lại vào hội thoại, rồi hỏi tiếp cho
+> đến khi model không gọi tool nữa."
+
 > "Vòng lặp rất đơn giản, và đó là chủ ý.
 >
 > Gửi toàn bộ hội thoại kèm danh sách tool cho model. Nếu model trả về `tool_calls` thì định
@@ -1988,6 +2068,10 @@ private async dispatch(call: ChatCompletionMessageToolCall): Promise<string> {
 }
 ```
 
+> "Đây là chỗ rất đáng giải thích: `use_skill` được xử lý ngay trong Host, còn tool MCP thì
+> được tra qua bảng rồi mới gọi xuống server tương ứng. Em có thể nói đây là lớp cầu nối giữa
+> mô hình ngôn ngữ và các server MCP khác nhau."
+
 > "Hàm dispatch có hai nhánh: `use_skill` xử lý ngay tại Host, còn lại thì tra bảng và gọi qua
 > MCP.
 >
@@ -2019,37 +2103,46 @@ return outcome.isError ? `ERROR: ${outcome.text}` : outcome.text;
 
 ```ts
 private extractToolCalls(reply): ChatCompletionMessageToolCall[] {
-  if (reply.tool_calls?.length) return reply.tool_calls;
+  if (reply.tool_calls?.length) return reply.tool_calls;            // dạng 1 — đúng chuẩn
 
-  const content = reply.content ?? "";
-  const matches = [...content.matchAll(/<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/g)];
-  if (matches.length === 0) return [];
+  const content = stripThinking(reply.content ?? "");
+  const tagged = [...content.matchAll(/<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/g)]
+    .map((m) => m[1]);                                              // dạng 2 — có thẻ bọc
+  const candidates = tagged.length > 0 ? tagged : this.bareJsonCandidates(content);  // dạng 3
 
-  const recovered: ChatCompletionMessageToolCall[] = [];
-  matches.forEach((match, index) => {
-    try {
-      const parsed = JSON.parse(match[1]) as { name?: string; arguments?: unknown };
-      if (!parsed.name) return;
-      recovered.push({
-        id: `recovered_${index}_${parsed.name}`,
-        type: "function",
-        function: { name: parsed.name, arguments: JSON.stringify(parsed.arguments ?? {}) },
-      });
-    } catch { /* không parse được thì coi như văn xuôi */ }
-  });
-
-  return recovered;
+  // ... parse từng candidate thành ChatCompletionMessageToolCall
 }
 ```
 
-> "Qwen đôi khi viết lệnh gọi tool thành **text** trong nội dung, dạng
-> `<tool_call>{...}</tool_call>`, thay vì điền vào trường `tool_calls` có cấu trúc. Đây là hạn
-> chế của lớp tương thích OpenAI trong Ollama, không phải lỗi của em.
+> "Qwen viết lệnh gọi tool theo **ba dạng khác nhau**, và cùng một model có lúc dùng dạng này,
+> lúc dùng dạng kia:
 >
-> Nếu không xử lý, Host sẽ tưởng model không gọi tool và trả về một đống JSON thô cho người dùng.
-> Em parse lại những cái đó.
+> **Dạng một** — điền đúng vào trường `tool_calls` có cấu trúc. Đây là hợp đồng OpenAI, SDK tự
+> hiểu.
 >
-> Em nghĩ đây là chi tiết đáng nói nhất về mặt kỹ thuật thực chiến: **khác biệt giữa demo chạy
+> **Dạng hai** — viết thành text trong nội dung, bọc trong thẻ `<tool_call>{...}</tool_call>`.
+> Đây là định dạng gốc của Qwen rò rỉ qua lớp tương thích OpenAI của Ollama.
+>
+> **Dạng ba** — xả thẳng một object JSON trần vào nội dung, không có thẻ bọc nào cả.
+>
+> Chỉ dạng một là SDK xử lý được. Nếu không cứu hai dạng còn lại, Host sẽ tưởng model đã trả lời
+> xong và **in nguyên đống JSON ra cho người dùng** — tool không hề được gọi."
+
+**Cái bẫy ở dạng ba — nên nói, vì nó cho thấy em có nghĩ tới hệ quả:**
+
+```ts
+const known = new Set(this.tools.map((t) => t.function.name));
+// chỉ nhận khi `name` khớp một tool có thật trong catalogue
+```
+
+> "Dạng ba nguy hiểm hơn hai dạng kia vì nó **không có dấu hiệu nào để nhận biết**. Nếu em nhận
+> bừa mọi object JSON, thì một câu trả lời hợp lệ tình cờ là JSON cũng sẽ bị đem đi gọi tool.
+>
+> Nên em thêm ràng buộc: chỉ coi là tool call khi trường `name` **khớp đúng tên một tool đang có
+> trong catalogue**. Ngoài ra em cũng không đẩy đoạn text đó ngược vào lịch sử hội thoại — vì làm
+> vậy là dạy model rằng in tool call ra text là chấp nhận được."
+>
+> "Em nghĩ đây là chi tiết đáng nói nhất về mặt kỹ thuật thực chiến: **khác biệt giữa demo chạy
 > được và demo đứng hình** nhiều khi nằm ở những chỗ như thế này."
 
 **Chi tiết 3 — chấp nhận tên tool thiếu namespace:**
@@ -2150,6 +2243,22 @@ Mở một MCP client thứ hai đã cấu hình cùng 3 server, rồi hỏi: *"
 >
 > Hệ quả: trong server stdio, **stdout là kênh giao thức**, nên mọi log phải ghi ra stderr. Một
 > dòng `console.log` lạc chỗ sẽ làm hỏng luồng JSON-RPC.
+
+### "JSON-RPC là gì, và vì sao MCP dùng nó?"
+> Một quy ước định dạng cho việc gọi hàm từ xa, mã hoá bằng JSON: `method` là tên thao tác,
+> `params` là tham số, `id` để ghép request với response. MCP dùng JSON-RPC 2.0 làm **ngôn ngữ
+> chung cho cả ba transport** — nhờ đó stdio và HTTP chỉ khác nhau ở *đường vận chuyển*, còn nội
+> dung message hoàn toàn giống nhau.
+>
+> Với stdio, mỗi message là một dòng kết thúc bằng `\n` (newline-delimited JSON).
+
+### "Vì sao dùng `execFile` mà không dùng `exec`?"
+> `exec` đưa chuỗi cho shell diễn giải, nên `;` `|` `&&` `$(...)` có ý nghĩa đặc biệt — một
+> `repo_path` độc hại là chạy được lệnh tuỳ ý. `execFile` không có shell trung gian: mỗi phần tử
+> trong mảng argv là một tham số nguyên vẹn, ký tự đặc biệt chỉ còn là ký tự thường.
+>
+> Đánh đổi là mất glob và pipe của shell, nhưng ở đây không cần đến chúng — mà tham số thì đến
+> từ LLM, vốn có thể bị prompt injection điều khiển.
 
 ### "`isError` khác gì với việc throw lỗi?"
 > Throw ra ngoài sẽ thành **JSON-RPC protocol error** — model không nhìn thấy, chỉ host xử lý.

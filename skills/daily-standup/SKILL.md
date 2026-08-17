@@ -1,6 +1,6 @@
 ---
 name: daily-standup
-description: Generate a daily standup or status report from a local git repository. Use this whenever the user asks what they worked on, wants a status report, a daily update, a standup, a summary of recent commits, or asks to log their progress for the team.
+description: Generate and record a daily standup update from a local git repository. Use this when the user asks for a standup/daily update that should be logged to the team log.
 ---
 
 # Daily Standup Generator
@@ -10,8 +10,10 @@ shared team log.
 
 ## When to use this
 
-The user asks any of: "what did I work on", "generate my daily status report", "write my standup",
-"summarise my recent commits", "log my progress".
+Use this only when the user clearly wants a standup-style update and/or asks to record progress in
+the shared team log (for example: "write my standup", "daily update", "log my progress").
+
+Do not use this for plain git-history summaries that do not ask for standup formatting or logging.
 
 ## Inputs
 

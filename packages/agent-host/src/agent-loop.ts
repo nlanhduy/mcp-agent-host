@@ -13,10 +13,10 @@ import type {
   ChatCompletionTool,
   ChatCompletionMessageToolCall,
 } from "openai/resources/chat/completions";
-import { LlmEngine, sanitizeToolName, toOpenAiTool } from "./llm.js";
-import type { McpManager } from "./mcp-manager.js";
-import { findSkill, renderSkillIndex, type Skill } from "./skills.js";
+import { LlmEngine, sanitizeToolName, toOpenAiTool } from './llm.js';
+import { findSkill, renderSkillIndex, Skill } from './skills.js';
 
+import type { McpManager } from "./mcp-manager.js";
 /** The one tool the host implements itself rather than proxying to a server. */
 const USE_SKILL_TOOL: ChatCompletionTool = {
   type: "function",
@@ -86,6 +86,8 @@ export class Agent {
       `- When a tool needs a repository path and the user did not name one, use: ${defaultRepoPath}`,
       "- If a tool result says it is an error, read the message, fix the arguments, and try once more.",
       "  If it fails again, tell the user plainly what failed. Do not pretend it succeeded.",
+      "- To use a tool, issue a real tool call. Never write the call out as text or JSON in your",
+      "  reply — a printed call is not executed, and the user sees raw JSON instead of an answer.",
       "- When you have the information you need, answer directly. Do not call more tools.",
       "",
       renderSkillIndex(skills),
@@ -121,14 +123,19 @@ export class Agent {
         return content || "(the model produced no text)";
       }
 
+      // When the call had to be recovered from text, that text *is* the call —
+      // showing it would look like noise, and echoing it back into the history
+      // teaches the model that printing tool calls as prose is acceptable.
+      const recovered = !reply.tool_calls?.length;
+      const note = recovered ? "" : stripReasoning(reply.content ?? "").trim();
+
       // Any prose alongside the tool calls is usually the model narrating its
       // plan — worth showing, but it isn't the final answer.
-      const note = stripReasoning(reply.content ?? "").trim();
       if (note) events?.onAssistantNote?.(note);
 
       this.messages.push({
         role: "assistant",
-        content: reply.content ?? "",
+        content: recovered ? "" : (reply.content ?? ""),
         tool_calls: toolCalls,
       });
 
@@ -165,7 +172,7 @@ export class Agent {
     events?.onToolCall?.(rawName, args);
 
     if (rawName === "use_skill") {
-      const skillName = String(args.skill_name ?? "");
+      const skillName = String(args.skill_name ?? args.skill ?? "");
       const skill = findSkill(skills, skillName);
       if (!skill) {
         const message =
@@ -190,10 +197,16 @@ export class Agent {
   /**
    * Reads tool calls from the model's reply.
    *
-   * Qwen and other small models sometimes emit a tool call as text inside
-   * `<tool_call>{"name":..., "arguments":{...}}</tool_call>` instead of filling
-   * in the structured `tool_calls` field. Recovering those keeps the agent
-   * working with models whose OpenAI-compatibility layer is imperfect.
+   * Small models emit tool calls three different ways, and qwen3:4b uses all
+   * three from one session to the next:
+   *
+   *   1. the structured `tool_calls` field — the OpenAI contract;
+   *   2. text wrapped in `<tool_call>{...}</tool_call>` — Qwen's native format
+   *      leaking through Ollama's compatibility layer;
+   *   3. a bare JSON object in `content`, with no wrapper at all.
+   *
+   * Only (1) is handled by the SDK. Recovering (2) and (3) is what keeps the
+   * agent usable on a 4B model.
    */
   private extractToolCalls(reply: {
     content?: string | null;
@@ -201,21 +214,25 @@ export class Agent {
   }): ChatCompletionMessageToolCall[] {
     if (reply.tool_calls?.length) return reply.tool_calls;
 
-    const content = reply.content ?? "";
-    const matches = [...content.matchAll(/<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/g)];
-    if (matches.length === 0) return [];
+    const content = stripThinking(reply.content ?? "");
+    const tagged =[...content.matchAll(/<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/g)].map((m) => m[1]);
+    const candidates = tagged.length > 0 ? tagged : this.bareJsonCandidates(content);
 
     const recovered: ChatCompletionMessageToolCall[] = [];
-    matches.forEach((match, index) => {
+    candidates.forEach((candidate, index) => {
       try {
-        const parsed = JSON.parse(match[1]) as { name?: string; arguments?: unknown };
+        const parsed = JSON.parse(candidate) as {
+          name?: string;
+          arguments?: unknown;
+          parameters?: unknown;
+        };
         if (!parsed.name) return;
         recovered.push({
           id: `recovered_${index}_${parsed.name}`,
           type: "function",
           function: {
             name: parsed.name,
-            arguments: JSON.stringify(parsed.arguments ?? {}),
+            arguments: JSON.stringify(parsed.arguments ?? parsed.parameters ?? {}),
           },
         });
       } catch {
@@ -224,6 +241,39 @@ export class Agent {
     });
 
     return recovered;
+  }
+
+  /**
+   * Treats a reply that is *nothing but* a JSON object as an unwrapped tool
+   * call — but only when its `name` matches a tool that actually exists.
+   *
+   * That guard matters: without it, a legitimate answer that happens to be JSON
+   * would be dispatched as a tool call instead of shown to the user.
+   */
+  private bareJsonCandidates(content: string): string[] {
+    const text = content
+      .trim()
+      .replace(/^```(?:json)?\s*/i, "")
+      .replace(/\s*```$/, "")
+      .trim();
+
+    if (!text.startsWith("{") && !text.startsWith("[")) return [];
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      return [];
+    }
+
+    const objects = Array.isArray(parsed) ? parsed : [parsed];
+    const known = new Set(this.tools.map((t) => t.function.name));
+
+    return objects.every(
+      (o) => typeof (o as { name?: unknown })?.name === "string" && known.has((o as { name: string }).name),
+    )
+      ? objects.map((o) => JSON.stringify(o))
+      : [];
   }
 }
 
@@ -238,6 +288,17 @@ export class Agent {
  * the tag is reasoning, so the answer is what follows it.
  */
 function stripReasoning(content: string): string {
+  return stripThinking(content).replace(/<tool_call>[\s\S]*?<\/tool_call>/g, "").trim();
+}
+
+/**
+ * Removes chain-of-thought only, leaving any tool-call markup intact.
+ *
+ * `extractToolCalls` needs this variant: it must see past the reasoning to find
+ * a call, but stripping `<tool_call>` blocks would delete the very thing it is
+ * looking for.
+ */
+function stripThinking(content: string): string {
   let text = content.replace(/<think>[\s\S]*?<\/think>/g, "");
 
   const orphanClose = text.lastIndexOf("</think>");
@@ -246,5 +307,5 @@ function stripReasoning(content: string): string {
   const orphanOpen = text.indexOf("<think>");
   if (orphanOpen !== -1) text = text.slice(0, orphanOpen);
 
-  return text.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, "").trim();
+  return text.trim();
 }
