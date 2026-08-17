@@ -42,6 +42,7 @@ export interface AgentEvents {
   onToolResult?: (name: string, text: string, isError: boolean) => void;
   onThinking?: (iteration: number) => void;
   onAssistantNote?: (text: string) => void;
+  onSkillIncomplete?: (skillName: string, missing: string[]) => void;
 }
 
 export interface AgentOptions {
@@ -53,11 +54,24 @@ export interface AgentOptions {
   events?: AgentEvents;
 }
 
+/**
+ * How many times the host may push back on a premature final answer before it
+ * gives up and lets the answer through.
+ *
+ * A cap is required: if a skill lists a tool whose server failed to connect, an
+ * uncapped gate would loop until `maxIterations` and return nothing useful.
+ */
+const MAX_SKILL_NUDGES = 2;
+
 export class Agent {
   private messages: ChatCompletionMessageParam[] = [];
   private tools: ChatCompletionTool[];
   /** Maps the sanitised name the LLM sees back to the catalogue name. */
   private nameMap = new Map<string, string>();
+  /** The skill loaded during the current turn, if any. */
+  private activeSkill: Skill | null = null;
+  /** Qualified names of tools called during the current turn. */
+  private calledTools = new Set<string>();
 
   constructor(private readonly options: AgentOptions) {
     this.tools = [USE_SKILL_TOOL];
@@ -99,6 +113,8 @@ export class Agent {
   /** Clears the conversation but keeps the system prompt and tool catalogue. */
   reset(): void {
     this.messages = [{ role: "system", content: this.systemPrompt() }];
+    this.activeSkill = null;
+    this.calledTools.clear();
   }
 
   get toolCount(): number {
@@ -109,6 +125,12 @@ export class Agent {
     const { llm, maxIterations, events } = this.options;
     this.messages.push({ role: "user", content: userMessage });
 
+    // Skill state is per-turn: a skill loaded for the previous request says
+    // nothing about what this one must do.
+    this.activeSkill = null;
+    this.calledTools.clear();
+    let nudges = 0;
+
     for (let iteration = 1; iteration <= maxIterations; iteration++) {
       events?.onThinking?.(iteration);
 
@@ -118,6 +140,23 @@ export class Agent {
       const toolCalls = this.extractToolCalls(reply);
 
       if (toolCalls.length === 0) {
+        const missing = this.missingSkillTools();
+
+        if (missing.length > 0 && nudges < MAX_SKILL_NUDGES) {
+          nudges += 1;
+          events?.onSkillIncomplete?.(this.activeSkill!.name, missing);
+          this.messages.push({ role: "assistant", content: reply.content ?? "" });
+          this.messages.push({
+            role: "user",
+            content:
+              `You have not finished the '${this.activeSkill!.name}' skill. These required steps ` +
+              `have not been performed yet: ${missing.join(", ")}. ` +
+              `Call them now using the results you already have. Do not write your final answer ` +
+              `until they have all returned.`,
+          });
+          continue;
+        }
+
         const content = stripReasoning(reply.content ?? "");
         this.messages.push({ role: "assistant", content: reply.content ?? "" });
         return content || "(the model produced no text)";
@@ -155,6 +194,20 @@ export class Agent {
     );
   }
 
+  /**
+   * Required tools of the active skill that have not been called this turn.
+   *
+   * A tool the host cannot reach is dropped from the check: holding the model
+   * to a step that is impossible would block the answer forever, and the skill
+   * body already tells it to report which step failed.
+   */
+  private missingSkillTools(): string[] {
+    if (!this.activeSkill) return [];
+    return this.activeSkill.requiredTools.filter(
+      (tool) => !this.calledTools.has(tool) && this.options.mcp.has(tool),
+    );
+  }
+
   /** Routes one tool call to `use_skill` or to the owning MCP server. */
   private async dispatch(call: ChatCompletionMessageToolCall): Promise<string> {
     const { mcp, skills, events } = this.options;
@@ -180,12 +233,20 @@ export class Agent {
         events?.onToolResult?.(rawName, message, true);
         return `ERROR: ${message}`;
       }
+      this.activeSkill = skill;
       events?.onToolResult?.(rawName, `Loaded skill '${skill.name}' (${skill.body.length} chars)`, false);
       return `Instructions for the '${skill.name}' skill. Follow them step by step:\n\n${skill.body}`;
     }
 
     const qualifiedName = this.nameMap.get(rawName) ?? rawName;
     const outcome = await mcp.callTool(qualifiedName, args);
+
+    // Recorded through the catalogue so a bare tool name still counts: the
+    // model often drops the namespace, and `resolve` is what reconciles that.
+    if (!outcome.isError) {
+      this.calledTools.add(mcp.resolve(qualifiedName)?.qualifiedName ?? qualifiedName);
+    }
+
     events?.onToolResult?.(rawName, outcome.text, outcome.isError);
 
     // The `isError` flag has no representation in OpenAI's tool-message format,

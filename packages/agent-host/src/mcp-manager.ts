@@ -11,12 +11,13 @@
  * `<server>__<tool>`, and the dispatch table maps that name back to its owner.
  */
 
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import type { Tool } from "@modelcontextprotocol/sdk/types.js";
-import { isHttpServer, resolveFromConfig, type HostConfig, type ServerConfig } from "./config.js";
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
+import { HostConfig, isHttpServer, resolveFromConfig, ServerConfig } from './config.js';
+
+import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 /** Separator between server name and tool name. Double underscore is safe in
  *  OpenAI function names, which allow only [A-Za-z0-9_-]. */
 const NS = "__";
@@ -39,6 +40,25 @@ interface Connection {
   name: string;
   client: Client;
   close: () => Promise<void>;
+  config: ServerConfig;
+}
+
+/**
+ * Recognises the one failure a long-lived host hits in normal use: the
+ * Streamable HTTP session it opened at startup no longer exists server-side.
+ *
+ * A deployed server loses its sessions whenever the platform restarts or spins
+ * down the container — Render's free tier does this after idle time — and a
+ * local server loses them on every code reload. The session id the host holds
+ * is then permanently stale, so every later call fails until it reconnects.
+ */
+function isDeadSession(reason: string): boolean {
+  return (
+    reason.includes("No valid session") ||
+    reason.includes("-32000") ||
+    reason.includes("Session not found") ||
+    reason.includes("HTTP 404")
+  );
 }
 
 export class McpManager {
@@ -83,7 +103,7 @@ export class McpManager {
         requestInit: { headers: server.headers },
       });
       await client.connect(transport);
-      return { name, client, close: () => transport.close() };
+      return { name, client, close: () => transport.close(), config: server };
     }
 
     const transport = new StdioClientTransport({
@@ -96,7 +116,25 @@ export class McpManager {
       stderr: "pipe",
     });
     await client.connect(transport);
-    return { name, client, close: () => transport.close() };
+    return { name, client, close: () => transport.close(), config: server };
+  }
+
+  /**
+   * Drops a connection and opens a fresh one to the same server.
+   *
+   * The tool catalogue is deliberately left alone: the tools have not changed,
+   * only the session carrying them, and re-indexing mid-call would invalidate
+   * the entry the caller is holding.
+   */
+  private async reconnect(connection: Connection): Promise<Connection> {
+    try {
+      await connection.close();
+    } catch {
+      // The old transport is already broken; failing to close it changes nothing.
+    }
+    const fresh = await this.connect(connection.name, connection.config);
+    this.connections.set(connection.name, fresh);
+    return fresh;
   }
 
   private async indexTools(connection: Connection): Promise<void> {
@@ -155,34 +193,60 @@ export class McpManager {
       };
     }
 
-    const connection = this.connections.get(entry.serverName);
+    let connection = this.connections.get(entry.serverName);
     if (!connection) {
       return { text: `Server '${entry.serverName}' is not connected.`, isError: true };
     }
 
     try {
-      const result = await connection.client.callTool({
-        name: entry.toolName,
-        arguments: args,
-      });
-
-      const content = Array.isArray(result.content) ? result.content : [];
-      const text = content
-        .map((block) => {
-          if (block.type === "text") return block.text;
-          if (block.type === "resource") return JSON.stringify(block.resource);
-          return `[${block.type} content]`;
-        })
-        .join("\n")
-        .trim();
-
-      return { text: text || "(tool returned no content)", isError: result.isError === true };
+      return await this.invoke(connection, entry.toolName, args);
     } catch (error) {
-      // A protocol-level failure — transport dropped, tool rejected the shape
-      // of the arguments. Report it as a tool error so the loop can continue.
       const reason = error instanceof Error ? error.message : String(error);
+
+      // A dead session is recoverable and invisible to the model, so retry it
+      // here rather than spending a reasoning round telling the model about a
+      // transport problem it has no way to fix.
+      if (isDeadSession(reason)) {
+        try {
+          connection = await this.reconnect(connection);
+          return await this.invoke(connection, entry.toolName, args);
+        } catch (retryError) {
+          const retryReason =
+            retryError instanceof Error ? retryError.message : String(retryError);
+          return {
+            text:
+              `Calling ${entry.qualifiedName} failed: the session to '${entry.serverName}' ` +
+              `expired and reconnecting also failed (${retryReason}).`,
+            isError: true,
+          };
+        }
+      }
+
+      // Any other protocol-level failure — transport dropped, tool rejected the
+      // shape of the arguments. Report it as a tool error so the loop continues.
       return { text: `Calling ${entry.qualifiedName} failed: ${reason}`, isError: true };
     }
+  }
+
+  /** One attempt at a tool call, with the MCP result flattened to text. */
+  private async invoke(
+    connection: Connection,
+    toolName: string,
+    args: Record<string, unknown>,
+  ): Promise<ToolCallOutcome> {
+    const result = await connection.client.callTool({ name: toolName, arguments: args });
+
+    const content = Array.isArray(result.content) ? result.content : [];
+    const text = content
+      .map((block) => {
+        if (block.type === "text") return block.text;
+        if (block.type === "resource") return JSON.stringify(block.resource);
+        return `[${block.type} content]`;
+      })
+      .join("\n")
+      .trim();
+
+    return { text: text || "(tool returned no content)", isError: result.isError === true };
   }
 
   /** Aggregated resources across all servers (Part 2 requires at least one). */

@@ -354,7 +354,7 @@ npm run host
 ✓ code-analyzer (3 tools)
 ✓ team-log (3 tools)
 ✓ git-inspector (3 tools)
-✓ 1 skill(s) from ./skills
+✓ 2 skill(s) from D:\YEAR4\22127086\skills
 
 10 tools in context (including use_skill).
 ```
@@ -367,9 +367,22 @@ npm run host
 /tools        → thấy 9 tool có namespace + use_skill
 /resources    → thấy resource của các server
 /prompts      → thấy standup_report
-/skills       → thấy daily-standup
+/skills       → thấy daily-standup và git-summary
 /exit         → thoát trong ~1 giây, không treo
 ```
+
+### Chạy thử luồng thật — bốn câu này phủ hết rubric
+
+```
+Show me the commits in this repo from the last 7 days      → git-inspector  (stdio)
+Find all TODO markers in the skills folder                 → code-analyzer  (HTTP local)
+Log a standup entry saying I fixed the tool-call bug        → team-log       (HTTPS + key)
+Generate my daily status report based on my local commits   → skill, 5 tool, 3 transport
+List my standup entries                                     → xác minh dữ liệu đã lưu thật
+```
+
+Câu cuối là bước **kiểm chứng bắt buộc**: nếu `list_standups` không thấy entry vừa tạo thì bước
+`log_standup` chưa chạy, và cảnh skill sẽ hỏng khi quay.
 
 ### Làm nóng model — bước cuối cùng, đừng bỏ
 
@@ -918,13 +931,22 @@ Quay lại tab Tools, chạy `git_recent_commits` với:
 repo_path: /nope
 ```
 
-Kết quả:
+Kết quả (trên Windows):
 ```
-git_recent_commits failed: Path '/nope' does not exist or is not readable.
+git_recent_commits failed: Path 'D:\nope\not\a\repo' does not exist or is not readable.
 
 Hint: Pass an absolute path to a directory on this machine.
 ```
 Inspector đánh dấu đỏ, nhưng **kết nối vẫn còn**.
+
+> **Chú ý đường dẫn trong thông báo đã đổi.** Em nhập `/nope/not/a/repo` nhưng lỗi báo
+> `D:\nope\not\a\repo`. Đó là `normalizePath` đã chuẩn hoá trước khi kiểm tra: trên Windows,
+> `/nope` là đường dẫn tuyệt đối **tính từ gốc ổ đĩa hiện tại**, nên `path.resolve` gắn `D:` vào.
+>
+> Chi tiết này đáng nói vì nó cho thấy thông báo lỗi trả về **đường dẫn thật sự được dùng**, chứ
+> không phải chuỗi người dùng gõ vào. Khi model đọc, nó thấy đúng thứ hệ thống đã thử mở — và
+> trong lượt chạy thật, model đã nhận ra ngay: *"Windows requires absolute paths starting with a
+> drive letter"* rồi tự đề xuất dùng đường dẫn mặc định.
 
 ### Lời thoại — nói chậm, đây là phần quan trọng nhất
 
@@ -1016,6 +1038,43 @@ export async function assertGitRepo(repoPath: string): Promise<string> {
 > "`ToolError` là lớp lỗi riêng, nghĩa là **thông báo này an toàn để cho model đọc nguyên văn**.
 > Lỗi khác loại — ví dụ bug trong code em — thì chỉ lấy `message`, không lộ stack trace."
 
+### Bằng chứng mạnh nhất: model **tự sửa** rồi gọi lại
+
+Ví dụ `/nope` ở trên chứng minh lỗi được báo tử tế, nhưng model chỉ dừng lại và giải thích. Nếu
+muốn chiếu cảnh model **thật sự phục hồi**, dùng ca này — bản ghi thật từ một lượt chạy:
+
+```
+you › Log a standup entry saying I fixed the tool-call recovery bug
+  → team-log__log_standup {"author":"Nguyen","yesterday":"fixed tool-call recovery bug",
+                           "today":"","blockers":"","repo":"D:\\YEAR4\\22127086"}
+  ← isError=true  MCP error -32602: Input validation error: Invalid arguments for tool
+                  log_standup: String must contain at least 1 character(s) at today
+  …round 2
+  → team-log__log_standup {"yesterday":"fixed tool-call recovery bug","author":"Nguyen",
+                           "blockers":"","repo":"D:\\YEAR4\\22127086","today":"N/A"}
+  ← { "saved": true, "id": "be7fc533-...", "date": "2026-08-17", "author": "Nguyen" }
+```
+
+> "Đây chính xác là thứ đề bài gọi là *graceful LLM error recovery*, và nó diễn ra trong **một
+> vòng duy nhất**.
+>
+> Lần gọi đầu, model để `today` là chuỗi rỗng. Zod schema của server bắt được và trả về thông báo
+> chỉ đúng tên trường: *`String must contain at least 1 character(s) at today`*.
+>
+> Model **đọc được câu đó**, hiểu vấn đề nằm ở trường `today`, điền `"N/A"` và gọi lại. Lần hai
+> thành công.
+>
+> Cần nhấn mạnh vì sao chuyện này xảy ra được: nếu em để lỗi thoát ra thành protocol error thì
+> model **hoàn toàn mù** — nó chỉ biết 'có gì đó hỏng'. Nhờ lỗi được đưa xuống thành nội dung
+> mà model đọc được, nó biết chính xác phải sửa cái gì. Không cần người dùng can thiệp một chữ nào."
+
+**Chi tiết đáng nói thêm — thông báo lỗi này đến từ đâu:**
+
+> "Chú ý mã lỗi `-32602 Invalid arguments`. Đây **không phải** `safeTool` sinh ra — nó do MCP SDK
+> tự động validate `inputSchema` trước khi gọi vào handler của em. Nghĩa là có **hai lớp bảo vệ**:
+> SDK chặn sai kiểu dữ liệu ngay ở cửa, còn `safeTool` bọc mọi lỗi phát sinh trong lúc chạy. Cả
+> hai đều trả về dạng model đọc được."
+
 ### Điểm cộng: không phải kết quả rỗng nào cũng là lỗi
 
 Nếu còn thời gian, chạy `git_recent_commits` với `since: "10 years ago"` ở một repo mới → trả về
@@ -1077,6 +1136,24 @@ npm run start:local-http
 
 Inspector: `npm run inspect` → transport **Streamable HTTP** → URL `http://localhost:3001/mcp`
 → **Connect** → chạy thử `find_todos`.
+
+> ⚠️ **Chọn `directory` cẩn thận — cái bẫy tự chiếu.** Nếu trỏ `find_todos` vào `packages/`, kết
+> quả sẽ toàn là mảnh vụn từ chính mã nguồn của nó:
+>
+> ```
+> "file": "server-local-http\\src\\index.ts", "line": 29, "marker": "TODO",
+> "text": "|FIXME|HACK|XXX|BUG)\\b[:\\s-]*(.*)$/i;"
+> ```
+>
+> Tool đang quét trúng **regex của chính nó** — file `index.ts` chứa chuỗi `"TODO"` trong regex,
+> trong description và trong danh sách marker mặc định. Về mặt kỹ thuật đây là kết quả **đúng**,
+> không phải bug, nhưng lên video trông rất lộn xộn.
+>
+> Cách xử lý: trỏ vào `skills/` hoặc một thư mục không chứa mã của scanner, hoặc gieo sẵn vài
+> `// TODO:` và `// FIXME:` thật vào một file để kết quả có ý nghĩa.
+>
+> Nếu bị hỏi tại sao, trả lời thẳng: *"Scanner đang quét chính nó. Đó là hành vi đúng — nó tìm
+> theo chuỗi văn bản, và file đó có chứa chuỗi cần tìm."*
 
 ## Lời thoại — so sánh với cảnh 1
 
@@ -1377,7 +1454,7 @@ npm run host
 ✓ code-analyzer (3 tools)
 ✓ team-log (3 tools)
 ✓ git-inspector (3 tools)
-✓ 1 skill(s) from ./skills
+✓ 2 skill(s) from D:\YEAR4\22127086\skills
 
 10 tools in context (including use_skill).
 ```
@@ -1390,7 +1467,7 @@ npm run host
 | `code-analyzer (3)` | Kết nối HTTP tới Terminal 1, gọi `tools/list`, đăng ký 3 tool | Tool Aggregation |
 | `team-log (3)` | Kết nối HTTP + gửi Bearer header lấy từ `.env` | Tool Aggregation |
 | `git-inspector (3)` | Host **tự spawn tiến trình con** qua stdio | Configuration Loader |
-| `1 skill(s)` | Đọc `skills/*/SKILL.md`, nạp index vào system prompt | Skill Support |
+| `2 skill(s)` | Đọc `skills/*/SKILL.md`, nạp index vào system prompt | Skill Support |
 | `10 tools` | 9 tool MCP + 1 tool `use_skill` do Host tự cung cấp | — |
 
 **Ý cần nhấn:**
@@ -1763,6 +1840,53 @@ for (const connection of this.connections.values()) {
 > kiểm tra capability trước thì không."
 
 ---
+
+## 4.5 — Call Dispatcher chạy thật: ba câu, ba transport
+
+Đây là phần chứng minh gạch đầu dòng **Call Dispatcher** của đề bài. Ba câu hỏi liên tiếp, mỗi
+câu đi tới một server khác nhau — **và người dùng không hề biết điều đó**.
+
+**Câu 1 — server stdio:**
+```
+you › Show me the commits in this repo from the last 7 days
+  → git-inspector__git_recent_commits {"repo_path":"D:\\YEAR4\\22127086","since":"7 days ago"}
+  ← { "count": 3, "range": "ef06460..e30d53d", "commits": [ ... ] }
+```
+
+**Câu 2 — server HTTP local:**
+```
+you › Find all TODO and FIXME markers in the skills folder
+  → code-analyzer__find_todos {"directory":"D:\\YEAR4\\22127086\\skills","max_results":10}
+  ← { "files_scanned": 2, "count": ..., "by_marker": { ... } }
+```
+
+**Câu 3 — server HTTPS public có API key:**
+```
+you › Log a standup entry saying I fixed the tool-call recovery bug
+  → team-log__log_standup {"author":"Nguyen","yesterday":"...","today":"N/A", ...}
+  ← { "saved": true, "id": "be7fc533-...", "date": "2026-08-17" }
+```
+
+**Lời thoại:**
+
+> "Ba câu này chạm cả ba transport, mà em không nói gì về transport cả. Em chỉ mô tả **việc cần
+> làm** bằng tiếng Anh.
+>
+> Thứ quyết định định tuyến là **tiền tố namespace** trong tên tool. `git-inspector__` đi qua ống
+> stdin/stdout tới tiến trình con. `code-analyzer__` đi qua HTTP tới cổng 3001. `team-log__` đi
+> qua HTTPS ra internet, kèm header `Authorization: Bearer`.
+>
+> Và toàn bộ ba đường đó dùng **cùng một class `Client`** của MCP SDK — chỉ khác đối tượng
+> transport truyền vào lúc kết nối. Đó chính là ý em nói ở phần mở đầu: **ba transport, một giao
+> thức**."
+
+**Câu chốt của cảnh này:**
+
+> "Với model, cả 9 tool nằm trên **một mặt phẳng duy nhất**. Nó không biết tool nào ở đâu, và
+> cũng không cần biết. Toàn bộ việc tách namespace, tra bảng, chọn transport, gắn header xác thực
+> nằm ở Host — đúng vai trò của một MCP Client."
+
+---
 ---
 
 # CẢNH 5 — Skill chạy end-to-end (3 phút)
@@ -1915,6 +2039,73 @@ constructor(private readonly options: AgentOptions) {
 >
 > Đây cũng là lý do con số hiện ra là **10 tool** chứ không phải 9."
 
+### Tầng ba — cổng kiểm soát hoàn thành skill
+
+> "Hai tầng trên là mẫu Agent Skills chuẩn. Nhưng khi test thật với model 4B em phát hiện một
+> vấn đề mà mẫu đó không giải quyết được: **model làm bước 1 rồi viết luôn báo cáo**, bỏ hết
+> các bước sau. Báo cáo trông rất thuyết phục, nhưng dữ liệu chưa bao giờ được ghi vào team log.
+>
+> Em đã thử làm mạnh lời văn trong SKILL.md — viết hẳn *'Step 5 is not optional'*, *'You have not
+> finished until log_standup returned saved: true'*. Vẫn không đủ. **Văn bản không ràng buộc được
+> model 4B.**
+>
+> Nên em đưa hợp đồng đó xuống thành **dữ liệu** mà Host kiểm tra được."
+
+Frontmatter của [SKILL.md](skills/daily-standup/SKILL.md):
+
+```yaml
+required_tools:
+  - git-inspector__git_recent_commits
+  - git-inspector__git_diff_stats
+  - team-log__log_standup
+```
+
+Và cổng kiểm tra trong [agent-loop.ts](packages/agent-host/src/agent-loop.ts):
+
+```ts
+if (toolCalls.length === 0) {                      // model muốn trả lời
+  const missing = this.missingSkillTools();
+
+  if (missing.length > 0 && nudges < MAX_SKILL_NUDGES) {
+    nudges += 1;
+    this.messages.push({ role: "user", content:
+      `You have not finished the '${skill}' skill. These required steps have not been ` +
+      `performed yet: ${missing.join(", ")}. Call them now...` });
+    continue;                                      // ← không return, ép chạy tiếp
+  }
+  return content;                                  // giờ mới cho phép trả lời
+}
+```
+
+> "Khi model định trả lời mà skill chưa xong, Host **không trả lời cho người dùng**. Nó đẩy vào
+> hội thoại một lời nhắc liệt kê đúng những bước còn thiếu, rồi `continue` vòng lặp. Đây là ràng
+> buộc **cứng**, do code quyết định chứ không do model tự giác."
+
+**Hai chỗ phòng thủ đáng nói — thể hiện là em nghĩ tới hệ quả:**
+
+```ts
+const MAX_SKILL_NUDGES = 2;
+// và
+.filter((tool) => !this.calledTools.has(tool) && this.options.mcp.has(tool))
+```
+
+> "Thứ nhất, em giới hạn số lần nhắc là **2**. Không có giới hạn thì một model bướng bỉnh sẽ
+> quay vòng tới hết `maxIterations` và người dùng chẳng nhận được gì.
+>
+> Thứ hai, em **loại khỏi danh sách kiểm tra những tool mà Host không kết nối được**. Nếu
+> `team-log` chết mà em vẫn ép, thì cổng chặn vĩnh viễn một bước bất khả thi. Bỏ qua nó thì skill
+> vẫn chạy hết phần làm được và báo cho người dùng biết bước nào hỏng — đúng như SKILL.md đã dặn."
+
+Trên màn hình sẽ thấy dòng vàng khi cổng kích hoạt:
+
+```
+  ⟲ skill 'daily-standup' incomplete — still required: team-log__log_standup
+  → team-log__log_standup {...}
+```
+
+> "Dòng `⟲` này chính là bằng chứng cơ chế đang chạy. Nếu model làm đủ ngay lần đầu thì không
+> thấy dòng nào — cổng chỉ xuất hiện khi cần."
+
 ## 5.2 — Mở SKILL.md cho người chấm xem
 
 **Thao tác:** Mở [skills/daily-standup/SKILL.md](skills/daily-standup/SKILL.md).
@@ -1979,17 +2170,88 @@ Generate my daily status report based on my local commits
 > "Không có slash command. Không có `/use-skill`. Chỉ là một câu tiếng Anh bình thường, đúng như
 > đề bài yêu cầu."
 
+### Output thật — đây là bản ghi của lần chạy thành công
+
+```
+you › Generate my daily status report based on my local commits
+  → use_skill {"skill_name":"daily-standup"}
+  ← use_skill Loaded skill 'daily-standup' (3618 chars)
+  …round 2
+  → git-inspector__git_recent_commits {"repo_path":"D:\\YEAR4\\22127086","since":"1 day ago"}
+  ← { "count": 1, "range": "e30d53d..e30d53d", "commits": [ ... ] }
+  …round 3
+  → git-inspector__git_diff_stats {"rev_range":"e30d53d~1..e30d53d", ...}
+  ← { "files_changed": 4, "insertions": 409, "deletions": 180, "net": 229, ... }
+  …round 4
+  → code-analyzer__find_todos {"directory":"D:\\YEAR4\\22127086","max_results":5}
+  ← { "files_scanned": 39, "count": 5, "by_marker": { "TODO": 5 }, ... }
+  …round 5
+  → team-log__log_standup {"author":"Nguyễn Lâm Anh Duy","yesterday":"...","today":"...","blockers":"..."}
+  ← { "saved": true, "id": "fd0547ef-...", "date": "2026-08-17" }
+  …round 6
+
+agent › The daily standup entry has been successfully recorded in the team log. ...
+```
+
 **Thuyết minh theo từng dòng hiện ra:**
 
 | Màn hình | Lời thoại |
 |---|---|
-| `→ use_skill {"skill_name":"daily-standup"}` | "Model **tự nhận ra** yêu cầu khớp với skill và gọi `use_skill`. Đây là tầng hai của progressive disclosure." |
-| `← use_skill Loaded skill (3478 chars)` | "3.4 KB hướng dẫn vừa vào context. Trước lệnh gọi này, model chỉ có một dòng description." |
-| `→ git-inspector__git_recent_commits` | "Bước 1 của skill. Namespace `git-inspector` cho biết đây là **server stdio**." |
-| `→ git-inspector__git_diff_stats` | "Bước 2. Chú ý nó truyền đúng `range` mà bước 1 trả về — dữ liệu chảy từ tool này sang tool kia." |
+| `→ use_skill {"skill_name":"daily-standup"}` | "Model **tự nhận ra** yêu cầu khớp với skill và gọi `use_skill`. Đây là tầng hai của progressive disclosure. Chú ý em không gõ slash command nào." |
+| `← Loaded skill 'daily-standup' (3618 chars)` | "3.6 KB hướng dẫn vừa vào context. **Trước** lệnh gọi này, model chỉ có đúng một dòng description." |
+| `…round 2` | "Mỗi `round` là một lần gọi LLM. Cả quy trình này tốn 6 vòng — đó là lý do nó chậm." |
+| `git_recent_commits ... "since":"1 day ago"` | "Bước 1. Chú ý `since` là `1 day ago` — em **không hề gõ** giá trị này, nó nằm trong SKILL.md. Đây là bằng chứng model thật sự đang đọc hướng dẫn chứ không ứng biến." |
+| `"range": "e30d53d..e30d53d"` | "Chỉ có 1 commit nên hai đầu của range trùng nhau." |
+| `→ git_diff_stats {"rev_range":"e30d53d~1..e30d53d"}` | **Dòng đáng nói nhất** — xem giải thích riêng bên dưới |
 | `→ code-analyzer__find_todos` | "Bước 3. Namespace đổi — giờ là **server HTTP local**, transport hoàn toàn khác." |
-| `→ team-log__log_standup` | "Bước 4. **Server public**, request này có kèm Bearer token." |
-| Bản standup markdown | "Một câu tiếng Anh vừa điều khiển 5 lệnh gọi tool qua 3 transport khác nhau." |
+| `→ team-log__log_standup` → `"saved": true` | "Bước 4. **Server public trên internet**, request này có kèm Bearer token. `saved: true` là dữ liệu đã nằm trên server thật." |
+| Bản standup markdown | "Một câu tiếng Anh vừa điều khiển **5 lệnh gọi tool qua 3 transport khác nhau**, và kết thúc bằng một bản ghi trên server deploy." |
+
+### Chi tiết cần dừng lại: `e30d53d~1..e30d53d`
+
+> "Anh chị để ý kỹ dòng này. Bước 1 trả về `range` là `e30d53d..e30d53d` — hai đầu **giống hệt
+> nhau**, vì repo chỉ có một commit trong ngày. Mà `git diff` trên một khoảng có hai đầu trùng
+> nhau thì luôn trả về rỗng.
+>
+> Model **không truyền nguyên cái range đó**. Nó truyền `e30d53d~1..e30d53d` — tức là lùi lại một
+> commit để đo đúng phần thay đổi. Và kết quả ra 4 file, +409/-180.
+>
+> Nó biết làm vậy vì trong SKILL.md em có viết sẵn luật cho đúng tình huống này:"
+
+```
+If the range's two halves are the same hash (`abc123..abc123`, which happens when there is
+only one commit), that range is empty by definition. Use `abc123~1..abc123` instead.
+```
+
+> "Em nghĩ đây là ví dụ tốt nhất trong cả bài về **giá trị thật của skill**: nó không chỉ là danh
+> sách bước, mà là nơi chứa **kinh nghiệm xử lý ca biên** mà model tự nghĩ ra không nổi. Nếu
+> không có dòng đó, bước 2 sẽ trả về toàn số 0 và bản báo cáo sẽ nói hôm nay không thay đổi gì."
+
+### Vì sao không thấy dòng `⟲` của cổng kiểm soát
+
+> "Ở lần chạy này cổng `required_tools` **không kích hoạt**, vì model đã làm đủ cả bốn bước.
+> Đúng như thiết kế: cổng chỉ xuất hiện khi cần, không can thiệp vào lượt chạy tốt."
+
+### So sánh với lần chạy hỏng — nên chiếu nếu còn thời gian
+
+Cùng câu hỏi, nhưng ở một lượt khác model **không gọi `use_skill`**:
+
+```
+you › Generate my daily status report based on my local commits
+  → git-inspector__git_recent_commits {"repo_path":"D:\\YEAR4\\22127086"}     ← không có `since`
+  …round 2
+agent › **Daily Status Report** ... This report is ready to be logged in the team channel.
+        Would you like to adjust any details before finalizing?
+```
+
+> "Hai dấu hiệu cho thấy model đang **ứng biến** chứ không chạy skill: không có dòng `use_skill`,
+> và `git_recent_commits` được gọi **thiếu tham số `since`** — vì giá trị đó chỉ có trong SKILL.md.
+>
+> Hậu quả: nó viết ra một báo cáo trông rất thuyết phục, rồi **hỏi ngược lại người dùng** thay vì
+> ghi vào team log. Kiểm chứng bằng `List my standup entries` thì đúng là không có gì được lưu.
+>
+> Đây là lý do em thêm hai thứ: **nới `description`** để câu 'daily status report' khớp chắc hơn,
+> và **cổng `required_tools`** để một khi skill đã nạp thì không thể kết thúc giữa chừng."
 
 ## 5.4 — Cơ chế: vòng lặp dispatch
 
@@ -2005,6 +2267,7 @@ async send(userMessage: string): Promise<string> {
 
     if (toolCalls.length === 0) {
       // Model không gọi tool nữa → đây là câu trả lời cuối cùng
+      // (bản đầy đủ còn kiểm tra cổng `required_tools` ở đúng chỗ này — xem mục 5.1)
       const content = stripReasoning(reply.content ?? "");
       this.messages.push({ role: "assistant", content: reply.content ?? "" });
       return content || "(the model produced no text)";
@@ -2279,6 +2542,36 @@ Mở một MCP client thứ hai đã cấu hình cùng 3 server, rồi hỏi: *"
 > `connectAll()` bắt lỗi **từng server riêng biệt**, ghi vào mảng `failures` rồi bỏ qua. Host vẫn
 > chạy với các server còn lại và báo `✗` cho server hỏng.
 
+### "Làm sao đảm bảo model chạy đủ các bước của skill?"
+> Không thể đảm bảo bằng lời văn — em đã thử viết *"Step 5 is not optional"* trong SKILL.md và
+> model 4B vẫn bỏ qua. Nên em ràng buộc bằng code.
+>
+> Skill khai báo `required_tools` trong frontmatter. Khi model định trả lời mà còn tool bắt buộc
+> chưa gọi, Host **không trả lời cho người dùng** — nó chèn một lời nhắc liệt kê đúng những bước
+> còn thiếu rồi chạy tiếp vòng lặp.
+>
+> Có hai giới hạn: tối đa 2 lần nhắc để một model bướng không làm treo phiên, và những tool thuộc
+> server không kết nối được thì bỏ khỏi danh sách kiểm tra — ép một bước bất khả thi thì cổng sẽ
+> chặn vĩnh viễn.
+>
+> Một điểm em muốn nói rõ: cổng này **chỉ hoạt động sau khi `use_skill` đã được gọi**. Việc model
+> có nhận ra nên dùng skill hay không thì vẫn là quyết định của model dựa trên `description` —
+> đó là bản chất của kích hoạt bằng ngôn ngữ tự nhiên, và em không muốn hard-code từ khoá vì làm
+> vậy là quay lại slash command.
+
+### "Nếu server deploy ngủ rồi restart giữa chừng thì sao?"
+> Đây là trường hợp thật em gặp với Render. Streamable HTTP **có trạng thái**: Host mở session
+> lúc khởi động và giữ `Mcp-Session-Id`. Khi container spin down rồi bật lại, `Map` session của
+> server rỗng, nên mọi lời gọi sau đó trả về `-32000 No valid session` — session id trong tay
+> Host thành **cũ vĩnh viễn**, restart Host mới chữa được.
+>
+> Em xử lý bằng cách nhận diện đúng lỗi đó trong `callTool`, **đóng transport cũ, mở session
+> mới, rồi thử lại đúng một lần**. Chỉ nhận diện lỗi mất session chứ không retry mọi lỗi — lỗi
+> tham số mà retry thì chỉ hỏng thêm.
+>
+> Em cố ý xử lý ở tầng transport chứ không đẩy lên cho model: đây là sự cố **model không có cách
+> nào sửa được** bằng cách đổi tham số, nên báo cho nó chỉ tốn một vòng suy luận vô ích.
+
 ### "Vì sao dùng `timingSafeEqual` mà không dùng `===`?"
 > So sánh chuỗi thông thường **dừng ở ký tự khác nhau đầu tiên**, nên thời gian phản hồi tiết lộ
 > được bao nhiêu ký tự đầu đã đúng. Gửi nhiều request rồi lấy trung bình là dò được từng ký tự.
@@ -2312,9 +2605,11 @@ Mở một MCP client thứ hai đã cấu hình cùng 3 server, rồi hỏi: *"
 | `✗ team-log Invalid API key` | **Luôn là** server cũ còn giữ cổng, không phải sai key. `lsof -ti:3002 \| xargs kill -9` rồi bật lại Terminal 2 |
 | `✗ code-analyzer ECONNREFUSED` | Terminal 1 chưa chạy |
 | `FATAL: port 3001 is already in use` | Chạy đúng lệnh mà nó gợi ý |
-| Model bỏ bước `log_standup` | Hỏi tiếp *"Now log that standup to the team log."* Model 4B đôi khi bỏ bước cuối |
+| Model bỏ bước `log_standup` | Cổng `required_tools` giờ tự ép chạy tiếp (dòng `⟲` màu vàng) — build lại nếu chưa. Nếu cổng đã hết 2 lượt nhắc, hỏi tiếp *"Now log that standup to the team log."* |
+| Model không gọi `use_skill`, tự bịa quy trình | Câu hỏi không khớp `description` của skill. Dùng đúng chữ *"standup"* hoặc *"daily status report"*, hoặc `/reset` rồi hỏi lại |
 | Đường dẫn báo lỗi lạ, lặp hai lần | Khoảng trắng thừa khi dán — đã có `normalizePath` xử lý, build lại nếu chưa |
 | Model trả về JSON thô thay vì câu trả lời | Tool call bị viết vào text — `extractToolCalls` xử lý, build lại nếu chưa |
+| `No valid session. Send an 'initialize' request first.` | Container Render đã ngủ/restart, session của Host thành cũ. `callTool` giờ **tự kết nối lại** — build lại nếu chưa. Gọi `curl $PUBLIC_URL/health` trước khi quay để đánh thức |
 | Chạy rất chậm | Bình thường, ~1 phút/vòng. Xem phần tốc độ trong [DEMO.md](DEMO.md) |
 
 ---

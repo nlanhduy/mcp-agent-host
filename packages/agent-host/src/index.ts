@@ -106,6 +106,10 @@ async function main() {
       onAssistantNote: (text) => console.log(`${c.dim}  ${truncate(text, 200)}${c.reset}`),
       onToolCall: (name, args) =>
         console.log(`${c.magenta}  → ${name}${c.reset} ${c.dim}${truncate(JSON.stringify(args), 200)}${c.reset}`),
+      onSkillIncomplete: (skillName, missing) =>
+        console.log(
+          `${c.yellow}  ⟲ skill '${skillName}' incomplete — still required: ${missing.join(", ")}${c.reset}`,
+        ),
       onToolResult: (name, text, isError) =>
         console.log(
           isError

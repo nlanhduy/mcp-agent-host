@@ -24,6 +24,15 @@ export interface Skill {
   /** Everything below the YAML frontmatter — the actual instructions. */
   body: string;
   path: string;
+  /**
+   * Tools the skill is not complete without, from the optional `required_tools`
+   * frontmatter key. The agent loop refuses to answer while any are unused.
+   *
+   * Prose alone does not hold a 4B model to a multi-step workflow: it reliably
+   * performs the first step, writes a convincing report, and drops the rest.
+   * Declaring the contract in data lets the host enforce it.
+   */
+  requiredTools: string[];
 }
 
 /**
@@ -64,7 +73,11 @@ export async function loadSkills(skillsDir: string): Promise<Skill[]> {
         );
       }
 
-      skills.push({ name, description, body: content.trim(), path });
+      const requiredTools = Array.isArray(data.required_tools)
+        ? data.required_tools.filter((tool: unknown): tool is string => typeof tool === "string")
+        : [];
+
+      skills.push({ name, description, body: content.trim(), path, requiredTools });
     } catch (error) {
       console.warn(
         `[skills] Failed to load ${path}: ${error instanceof Error ? error.message : error}`,

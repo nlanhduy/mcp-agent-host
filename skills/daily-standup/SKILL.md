@@ -1,6 +1,10 @@
 ---
 name: daily-standup
-description: Generate and record a daily standup update from a local git repository. Use this when the user asks for a standup/daily update that should be logged to the team log.
+description: Generate and record a daily standup or status report from a local git repository. Use this whenever the user asks for a standup, a daily update, a daily status report, a progress report, or asks what they worked on and wants it recorded to the team log.
+required_tools:
+  - git-inspector__git_recent_commits
+  - git-inspector__git_diff_stats
+  - team-log__log_standup
 ---
 
 # Daily Standup Generator
